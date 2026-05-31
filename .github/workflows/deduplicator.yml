@@ -24,7 +24,7 @@ jobs:
           HF_REPO_ID: ${{ secrets.HF_REPO_ID }}
         run: |
           echo "Downloading all domain chunks..."
-          huggingface-cli download $HF_REPO_ID --repo-type dataset --include "domains_*.txt.gz" --local-dir ./chunks
+          hf download $HF_REPO_ID --repo-type dataset --include "domains_*.txt.gz" --local-dir ./chunks
 
       - name: Merge and Deduplicate (Blazing Fast Linux Sort)
         run: |
@@ -43,5 +43,5 @@ jobs:
           HF_REPO_ID: ${{ secrets.HF_REPO_ID }}
         run: |
           echo "Uploading master list..."
-          huggingface-cli upload $HF_REPO_ID master_domains.txt.gz master_domains.txt.gz --repo-type dataset
+          hf upload $HF_REPO_ID master_domains.txt.gz master_domains.txt.gz --repo-type dataset
           echo "Master list uploaded successfully!"
