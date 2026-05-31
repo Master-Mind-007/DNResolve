@@ -4,10 +4,11 @@ import gzip
 import json
 import os
 import time
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, CommitOperationAdd
 
 # Maximum runtime before voluntarily shutting down (5.5 hours)
 MAX_RUNTIME_SECONDS = 5.5 * 3600 
+BATCH_SIZE = 5 # Upload 5 files at a time to avoid HF 128 commits/hour rate limit
 
 def get_latest_crawl_id():
     print("Fetching the latest Common Crawl ID...")
@@ -52,6 +53,52 @@ def stream_and_extract(url):
         
     return unique_domains
 
+def upload_batch(api, hf_repo_id, files_to_upload, max_retries=5):
+    if not files_to_upload:
+        return
+        
+    print(f"Batch uploading {len(files_to_upload)} files to HuggingFace to save rate limits...")
+    operations = []
+    for filename in files_to_upload:
+        operations.append(CommitOperationAdd(path_in_repo=filename, path_or_fileobj=filename))
+        
+    for attempt in range(max_retries):
+        try:
+            api.create_commit(
+                repo_id=hf_repo_id,
+                repo_type="dataset",
+                operations=operations,
+                commit_message=f"Batch upload of {len(files_to_upload)} chunks from swarm worker"
+            )
+            print("Batch upload complete!")
+            # Cleanup
+            for filename in files_to_upload:
+                try:
+                    os.remove(filename)
+                except OSError:
+                    pass
+            return # Success!
+            
+        except Exception as e:
+            error_str = str(e)
+            print(f"Upload failed (Attempt {attempt+1}/{max_retries}): {error_str}")
+            if attempt < max_retries - 1:
+                sleep_time = 60 # Default for 500s or network drops
+                
+                if "429" in error_str or "Retry after" in error_str:
+                    sleep_time = 300 # Default rate limit sleep
+                    import re
+                    match = re.search(r"Retry after (\d+) seconds", error_str)
+                    if match:
+                        sleep_time = int(match.group(1)) + 15 # Wait exactly what they ask + 15s buffer
+                    print(f"Rate limited by HuggingFace! Sleeping for {sleep_time} seconds...")
+                else:
+                    print(f"Network error! Sleeping for {sleep_time} seconds before retrying...")
+                    
+                time.sleep(sleep_time)
+            else:
+                print(f"CRITICAL: Failed to upload batch after {max_retries} attempts.")
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--worker-id', type=int, required=True, help="ID of this worker (e.g., 0 to 19)")
@@ -69,11 +116,11 @@ def main():
         
     api = HfApi(token=hf_token)
     
-    # Ensure the repo exists (creates a private dataset if it doesn't)
+    # Ensure the repo exists
     try:
         api.create_repo(repo_id=hf_repo_id, repo_type="dataset", private=True, exist_ok=True)
     except Exception as e:
-        print(f"Repo setup note: {e}")
+        pass
 
     crawl_id = get_latest_crawl_id()
     print(f"Targeting Crawl: {crawl_id}")
@@ -81,25 +128,25 @@ def main():
     completed_files = get_completed_files(api, hf_repo_id)
     print(f"Found {len(completed_files)} files already on HuggingFace.")
 
-    # A typical crawl has exactly 300 index files: cdx-00000.gz to cdx-00299.gz
     TOTAL_FILES = 300
+    files_to_upload = []
     
     for i in range(TOTAL_FILES):
-        # 1. Modulo Sharding: Only process files assigned to this worker
+        # 1. Modulo Sharding
         if i % args.total_workers != args.worker_id:
             continue
             
         output_filename = f"domains_{crawl_id}_part_{i:05d}.txt.gz"
         
-        # 2. State Check: Skip if already uploaded
+        # 2. State Check
         if output_filename in completed_files:
             print(f"[{output_filename}] Already processed by swarm. Skipping.")
             continue
             
-        # 3. Time Check: Stop if we are close to the 6-hour limit
+        # 3. Time Check
         elapsed_time = time.time() - start_time
         if elapsed_time > MAX_RUNTIME_SECONDS:
-            print("Reached 5.5 hour runtime limit. Voluntarily shutting down to avoid GitHub timeout.")
+            print("Reached 5.5 hour runtime limit. Voluntarily shutting down.")
             break
             
         # 4. Extract
@@ -117,18 +164,17 @@ def main():
             for d in sorted(domains):
                 f.write(f"{d}\n")
                 
-        # 6. Upload to HuggingFace
-        print(f"[{output_filename}] Uploading to HuggingFace {hf_repo_id}...")
-        api.upload_file(
-            path_or_fileobj=output_filename,
-            path_in_repo=output_filename,
-            repo_id=hf_repo_id,
-            repo_type="dataset"
-        )
-        print(f"[{output_filename}] Upload complete!")
+        files_to_upload.append(output_filename)
         
-        # 7. Cleanup local file to save runner disk space
-        os.remove(output_filename)
+        # 6. Batch Upload Logic
+        if len(files_to_upload) >= BATCH_SIZE:
+            upload_batch(api, hf_repo_id, files_to_upload)
+            files_to_upload.clear()
+
+    # Flush any remaining files
+    if files_to_upload:
+        upload_batch(api, hf_repo_id, files_to_upload)
+        files_to_upload.clear()
 
     print("Worker finished its queue!")
 
