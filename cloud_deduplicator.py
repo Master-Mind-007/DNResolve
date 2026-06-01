@@ -171,13 +171,15 @@ def main():
     print(f"Running massive zcat | sort -u and splitting into 50M line chunks to stay under 500MB...")
     
     # 50 million lines uncompressed is ~800MB text, which compresses to ~150MB. 
-    # This prevents any individual file from exceeding the 500MB threshold.
-    cmd = f"find {local_dir} -name 'master_CC-MAIN-*.txt.gz' -exec zcat {{}} + | sort -u | split -l 50000000 -d - GLOBAL_MASTER_part_"
+    # CRITICAL DISK OPTIMIZATION: We use --filter to pipe the split chunks directly into gzip in memory!
+    # This ensures the massive uncompressed text NEVER touches the hard drive, saving ~10GB of disk space.
+    cmd = f"find {local_dir} -name 'master_CC-MAIN-*.txt.gz' -exec zcat {{}} + | sort -u | split -l 50000000 -d - --filter='gzip > $FILE.gz' GLOBAL_MASTER_part_"
     subprocess.run(cmd, shell=True, check=True)
     
     # --- METADATA ---
     print("Counting total unique domains across all chunks...")
-    count_cmd = "cat GLOBAL_MASTER_part_* | wc -l"
+    # Since they are now gzipped instantly, we must count the gzipped files
+    count_cmd = "zcat GLOBAL_MASTER_part_*.gz | wc -l"
     global_count = int(subprocess.check_output(count_cmd, shell=True).strip())
     
     import json
@@ -192,9 +194,6 @@ def main():
         
     print(f"Total Unique Domains: {global_count:,}")
     # ----------------
-    
-    print("Compressing all chunks...")
-    subprocess.run("gzip GLOBAL_MASTER_part_*", shell=True, check=True)
     
     # Find all generated chunks and upload them
     chunks = [f for f in os.listdir('.') if f.startswith('GLOBAL_MASTER_part_') and f.endswith('.gz')]
