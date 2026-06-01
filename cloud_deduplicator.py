@@ -47,6 +47,7 @@ def main():
                 if filename.startswith("master_"):
                     crawls[crawl_id]['has_master'] = True
                     master_files.append(file)
+                elif filename.startswith("domains_"):
                     crawls[crawl_id]['chunks'].append(file)
 
     masters_created_this_run = []
