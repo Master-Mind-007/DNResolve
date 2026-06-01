@@ -159,7 +159,9 @@ def main():
     os.makedirs(local_dir, exist_ok=True)
     
     # Download all month masters
+    active_crawls_merged = []
     for master_path in master_files:
+        active_crawls_merged.append(master_path.split("/")[0])
         print(f"Downloading {master_path}...")
         api.hf_hub_download(
             repo_id=hf_repo_id,
@@ -186,6 +188,7 @@ def main():
     metadata = {
         "dataset": "GLOBAL_MASTER",
         "unique_domains": global_count,
+        "indexes_merged": sorted(active_crawls_merged),
         "generated_at": str(datetime.datetime.now())
     }
     meta_filename = "metadata_GLOBAL.json"
