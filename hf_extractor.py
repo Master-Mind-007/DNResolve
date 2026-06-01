@@ -47,7 +47,7 @@ def get_crawl_paths(crawl_id):
         with urllib.request.urlopen(req) as response:
             with gzip.GzipFile(fileobj=response, mode='r') as gz:
                 content = gz.read().decode('utf-8')
-                parts = [p for p in content.strip().split('\n') if p]
+                parts = [p for p in content.strip().split('\n') if 'cdx-' in p and p.endswith('.gz')]
                 return parts
     except Exception as e:
         print(f"Failed to fetch paths for {crawl_id}: {e}")
