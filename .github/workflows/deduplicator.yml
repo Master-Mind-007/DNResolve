@@ -27,5 +27,5 @@ jobs:
           HF_REPO_ID: ${{ secrets.HF_REPO_ID }}
         run: |
           echo "Running massive cloud orchestration script..."
-          python cloud_deduplicator.py
+          python -u cloud_deduplicator.py
           echo "Done!"

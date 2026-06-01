@@ -32,4 +32,4 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO_ID: ${{ secrets.HF_REPO_ID }} 
         run: |
-          python hf_extractor.py --worker-id ${{ matrix.worker_id }} --total-workers 20
+          python -u hf_extractor.py --worker-id ${{ matrix.worker_id }} --total-workers 20
