@@ -10,38 +10,22 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Install HuggingFace CLI
+      - name: Install Dependencies
         run: pip install -U "huggingface_hub[cli]"
 
-      - name: Download all chunks from HuggingFace
+      - name: Orchestrate Month and Global Masters
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO_ID: ${{ secrets.HF_REPO_ID }}
         run: |
-          echo "Downloading all domain chunks..."
-          hf download $HF_REPO_ID --repo-type dataset --include "domains_*.txt.gz" --local-dir ./chunks
-
-      - name: Merge and Deduplicate (Blazing Fast Linux Sort)
-        run: |
-          echo "Merging and deduplicating billions of domains..."
-          # zcat unzips on the fly
-          # sort -u removes all duplicates (spills to disk if RAM is full)
-          # gzip compresses the final master list
-          zcat ./chunks/*.gz | sort -u | gzip > master_domains.txt.gz
-          
-          echo "Deduplication complete. Master file created:"
-          ls -lh master_domains.txt.gz
-
-      - name: Upload Master File to HuggingFace
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_REPO_ID: ${{ secrets.HF_REPO_ID }}
-        run: |
-          echo "Uploading master list..."
-          hf upload $HF_REPO_ID master_domains.txt.gz master_domains.txt.gz --repo-type dataset
-          echo "Master list uploaded successfully!"
+          echo "Running massive cloud orchestration script..."
+          python cloud_deduplicator.py
+          echo "Done!"

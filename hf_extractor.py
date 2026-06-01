@@ -4,19 +4,31 @@ import gzip
 import json
 import os
 import time
+import datetime
 from huggingface_hub import HfApi, CommitOperationAdd
 
 # Maximum runtime before voluntarily shutting down (5.5 hours)
 MAX_RUNTIME_SECONDS = 5.5 * 3600 
-BATCH_SIZE = 5 # Upload 5 files at a time to avoid HF 128 commits/hour rate limit
+BATCH_SIZE = 5 # Upload 5 files at a time to avoid HF rate limit
 
-def get_latest_crawl_id():
-    print("Fetching the latest Common Crawl ID...")
+def get_all_crawls(years_to_keep=3):
+    current_year = datetime.datetime.now().year
+    min_year = current_year - years_to_keep
+    print(f"Fetching the list of all historical Common Crawl IDs (since {min_year})...")
     url = "https://index.commoncrawl.org/collinfo.json"
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
     with urllib.request.urlopen(req) as response:
         data = json.loads(response.read().decode('utf-8'))
-        return data[0]['id']
+        # Returns list of dicts, newest first
+        crawls = []
+        for c in data:
+            try:
+                year = int(c['id'].split('-')[2])
+                if year >= min_year:
+                    crawls.append(c['id'])
+            except:
+                pass
+        return crawls
 
 def get_completed_files(api, repo_id):
     """Query HuggingFace to get a list of already uploaded chunks."""
@@ -26,6 +38,20 @@ def get_completed_files(api, repo_id):
     except Exception as e:
         print(f"Warning: Could not fetch files from HF (maybe repo doesn't exist yet?): {e}")
         return set()
+
+def get_crawl_paths(crawl_id):
+    """Fetches cc-index.paths.gz to determine exact number of parts."""
+    path_url = f"https://data.commoncrawl.org/crawl-data/{crawl_id}/cc-index.paths.gz"
+    req = urllib.request.Request(path_url, headers={'User-Agent': 'Mozilla/5.0'})
+    try:
+        with urllib.request.urlopen(req) as response:
+            with gzip.GzipFile(fileobj=response, mode='r') as gz:
+                content = gz.read().decode('utf-8')
+                parts = [p for p in content.strip().split('\n') if p]
+                return parts
+    except Exception as e:
+        print(f"Failed to fetch paths for {crawl_id}: {e}")
+        return []
 
 def stream_and_extract(url):
     """Streams a single CDX file and returns a set of unique domains."""
@@ -53,14 +79,16 @@ def stream_and_extract(url):
         
     return unique_domains
 
-def upload_batch(api, hf_repo_id, files_to_upload, max_retries=5):
+def upload_batch(api, hf_repo_id, files_to_upload, crawl_id, max_retries=5):
     if not files_to_upload:
         return
         
-    print(f"Batch uploading {len(files_to_upload)} files to HuggingFace to save rate limits...")
+    print(f"Batch uploading {len(files_to_upload)} files to HuggingFace ({crawl_id})...")
     operations = []
     for filename in files_to_upload:
-        operations.append(CommitOperationAdd(path_in_repo=filename, path_or_fileobj=filename))
+        # Upload into the crawl's dedicated folder
+        path_in_repo = f"{crawl_id}/{filename}"
+        operations.append(CommitOperationAdd(path_in_repo=path_in_repo, path_or_fileobj=filename))
         
     for attempt in range(max_retries):
         try:
@@ -68,7 +96,7 @@ def upload_batch(api, hf_repo_id, files_to_upload, max_retries=5):
                 repo_id=hf_repo_id,
                 repo_type="dataset",
                 operations=operations,
-                commit_message=f"Batch upload of {len(files_to_upload)} chunks from swarm worker"
+                commit_message=f"Batch upload of {len(files_to_upload)} chunks for {crawl_id}"
             )
             print("Batch upload complete!")
             # Cleanup
@@ -122,59 +150,81 @@ def main():
     except Exception as e:
         pass
 
-    crawl_id = get_latest_crawl_id()
-    print(f"Targeting Crawl: {crawl_id}")
+    all_crawls = get_all_crawls()
+    hf_files = get_completed_files(api, hf_repo_id)
     
-    completed_files = get_completed_files(api, hf_repo_id)
-    print(f"Found {len(completed_files)} files already on HuggingFace.")
-
-    TOTAL_FILES = 300
-    files_to_upload = []
-    
-    for i in range(TOTAL_FILES):
-        # 1. Modulo Sharding
-        if i % args.total_workers != args.worker_id:
-            continue
-            
-        output_filename = f"domains_{crawl_id}_part_{i:05d}.txt.gz"
-        
-        # 2. State Check
-        if output_filename in completed_files:
-            print(f"[{output_filename}] Already processed by swarm. Skipping.")
-            continue
-            
-        # 3. Time Check
-        elapsed_time = time.time() - start_time
-        if elapsed_time > MAX_RUNTIME_SECONDS:
-            print("Reached 5.5 hour runtime limit. Voluntarily shutting down.")
-            break
-            
-        # 4. Extract
-        base_url = "https://data.commoncrawl.org/"
-        url = base_url + f"cc-index/collections/{crawl_id}/indexes/cdx-{i:05d}.gz"
-        
-        domains = stream_and_extract(url)
-        if domains is None:
-            continue
-            
-        print(f"[{output_filename}] Extracted {len(domains):,} unique domains. Compressing...")
-        
-        # 5. Compress locally
-        with gzip.open(output_filename, 'wt', encoding='utf-8') as f:
-            for d in sorted(domains):
-                f.write(f"{d}\n")
+    # Identify active crawls
+    # A crawl is considered "completed" if its master file exists in its folder.
+    active_crawls = []
+    for crawl_id in all_crawls:
+        master_file_path = f"{crawl_id}/master_{crawl_id}.txt.gz"
+        if master_file_path not in hf_files:
+            active_crawls.append(crawl_id)
+            if len(active_crawls) >= 3: # Limit to 3 active crawls per swarm run to not spread too thin
+                break
                 
-        files_to_upload.append(output_filename)
-        
-        # 6. Batch Upload Logic
-        if len(files_to_upload) >= BATCH_SIZE:
-            upload_batch(api, hf_repo_id, files_to_upload)
-            files_to_upload.clear()
+    print(f"Targeting {len(active_crawls)} active crawls: {active_crawls}")
 
-    # Flush any remaining files
-    if files_to_upload:
-        upload_batch(api, hf_repo_id, files_to_upload)
-        files_to_upload.clear()
+    for crawl_id in active_crawls:
+        print(f"--- Starting work on {crawl_id} ---")
+        paths = get_crawl_paths(crawl_id)
+        if not paths:
+            continue
+            
+        total_parts = len(paths)
+        print(f"Crawl {crawl_id} has {total_parts} exact parts.")
+        
+        files_to_upload = []
+        
+        for i in range(total_parts):
+            # 1. Modulo Sharding
+            if i % args.total_workers != args.worker_id:
+                continue
+                
+            output_filename = f"domains_{crawl_id}_part_{i:05d}.txt.gz"
+            path_in_repo = f"{crawl_id}/{output_filename}"
+            
+            # 2. State Check
+            if path_in_repo in hf_files:
+                print(f"[{output_filename}] Already on HuggingFace. Skipping.")
+                continue
+                
+            # 3. Time Check
+            elapsed_time = time.time() - start_time
+            if elapsed_time > MAX_RUNTIME_SECONDS:
+                print("Reached 5.5 hour runtime limit. Voluntarily shutting down.")
+                break
+                
+            # 4. Extract
+            base_url = "https://data.commoncrawl.org/"
+            url = base_url + paths[i]
+            
+            domains = stream_and_extract(url)
+            if domains is None:
+                continue
+                
+            print(f"[{output_filename}] Extracted {len(domains):,} unique domains. Compressing...")
+            
+            # 5. Compress locally
+            with gzip.open(output_filename, 'wt', encoding='utf-8') as f:
+                for d in sorted(domains):
+                    f.write(f"{d}\n")
+                    
+            files_to_upload.append(output_filename)
+            
+            # 6. Batch Upload Logic
+            if len(files_to_upload) >= BATCH_SIZE:
+                upload_batch(api, hf_repo_id, files_to_upload, crawl_id)
+                files_to_upload.clear()
+
+        # Flush any remaining files for this crawl
+        if files_to_upload:
+            upload_batch(api, hf_repo_id, files_to_upload, crawl_id)
+            files_to_upload.clear()
+            
+        # Time check between crawls
+        if time.time() - start_time > MAX_RUNTIME_SECONDS:
+            break
 
     print("Worker finished its queue!")
 
