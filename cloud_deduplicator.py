@@ -102,7 +102,24 @@ def main():
             cmd = f"zcat {local_dir}/{crawl_id}/domains_*.txt.gz | sort -u | gzip > {master_filename}"
             subprocess.run(cmd, shell=True, check=True)
             
-            print(f"Uploading {master_filename}...")
+            # --- METADATA ---
+            print(f"Counting unique domains for {crawl_id}...")
+            count_cmd = f"zcat {master_filename} | wc -l"
+            line_count = int(subprocess.check_output(count_cmd, shell=True).strip())
+            
+            import json
+            metadata = {
+                "crawl_id": crawl_id,
+                "unique_domains": line_count,
+                "generated_at": str(datetime.datetime.now())
+            }
+            meta_filename = f"metadata_{crawl_id}.json"
+            with open(meta_filename, "w") as f:
+                json.dump(metadata, f, indent=4)
+            # ----------------
+            
+            print(f"Uploading {master_filename} and metadata...")
+            # Upload Master
             path_in_repo = f"{crawl_id}/{master_filename}"
             api.upload_file(
                 path_or_fileobj=master_filename,
@@ -111,9 +128,18 @@ def main():
                 repo_type="dataset",
                 commit_message=f"Upload master deduplicated list for {crawl_id}"
             )
+            # Upload Metadata
+            api.upload_file(
+                path_or_fileobj=meta_filename,
+                path_in_repo=f"{crawl_id}/{meta_filename}",
+                repo_id=hf_repo_id,
+                repo_type="dataset",
+                commit_message=f"Upload metadata for {crawl_id}"
+            )
             
             print(f"Cleanup {crawl_id}...")
             os.remove(master_filename)
+            os.remove(meta_filename)
             subprocess.run(f"rm -rf {local_dir}", shell=True)
             
             masters_created_this_run.append(path_in_repo)
@@ -148,12 +174,31 @@ def main():
     cmd = f"find {local_dir} -name 'master_CC-MAIN-*.txt.gz' -exec zcat {{}} + | sort -u | split -l 50000000 -d - GLOBAL_MASTER_part_"
     subprocess.run(cmd, shell=True, check=True)
     
+    # --- METADATA ---
+    print("Counting total unique domains across all chunks...")
+    count_cmd = "cat GLOBAL_MASTER_part_* | wc -l"
+    global_count = int(subprocess.check_output(count_cmd, shell=True).strip())
+    
+    import json
+    metadata = {
+        "dataset": "GLOBAL_MASTER",
+        "unique_domains": global_count,
+        "generated_at": str(datetime.datetime.now())
+    }
+    meta_filename = "metadata_GLOBAL.json"
+    with open(meta_filename, "w") as f:
+        json.dump(metadata, f, indent=4)
+        
+    print(f"Total Unique Domains: {global_count:,}")
+    # ----------------
+    
     print("Compressing all chunks...")
     subprocess.run("gzip GLOBAL_MASTER_part_*", shell=True, check=True)
     
     # Find all generated chunks and upload them
     chunks = [f for f in os.listdir('.') if f.startswith('GLOBAL_MASTER_part_') and f.endswith('.gz')]
     
+    # Upload chunks
     for chunk in chunks:
         print(f"Uploading {chunk}...")
         api.upload_file(
@@ -164,6 +209,17 @@ def main():
             commit_message=f"Update GLOBAL MASTER chunk {chunk}"
         )
         os.remove(chunk)
+        
+    # Upload metadata
+    print("Uploading metadata_GLOBAL.json...")
+    api.upload_file(
+        path_or_fileobj=meta_filename,
+        path_in_repo=f"GLOBAL_MASTERS/{meta_filename}",
+        repo_id=hf_repo_id,
+        repo_type="dataset",
+        commit_message="Update GLOBAL MASTER metadata"
+    )
+    os.remove(meta_filename)
     
     print("Cleanup global temp folder...")
     subprocess.run(f"rm -rf {local_dir}", shell=True)
