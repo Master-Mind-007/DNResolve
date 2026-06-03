@@ -5,11 +5,12 @@ import json
 import os
 import time
 import datetime
+import random
 from huggingface_hub import HfApi, CommitOperationAdd
 
 # Maximum runtime before voluntarily shutting down (5.5 hours)
 MAX_RUNTIME_SECONDS = 5.5 * 3600 
-BATCH_SIZE = 5 # Upload 5 files at a time to avoid HF rate limit
+BATCH_SIZE = 15 # Upload 15 files at a time to slash total HF API requests
 
 def get_all_crawls(years_to_keep=3):
     current_year = datetime.datetime.now().year
@@ -92,6 +93,11 @@ def upload_batch(api, hf_repo_id, files_to_upload, crawl_id, max_retries=5):
         
     for attempt in range(max_retries):
         try:
+            # ANTI-COLLISION JITTER: Stagger the 20 workers randomly so they don't hit HF API at the exact same moment
+            jitter = random.uniform(5, 45)
+            print(f"Applying {jitter:.1f}s anti-collision jitter before commit...")
+            time.sleep(jitter)
+            
             api.create_commit(
                 repo_id=hf_repo_id,
                 repo_type="dataset",
@@ -111,17 +117,22 @@ def upload_batch(api, hf_repo_id, files_to_upload, crawl_id, max_retries=5):
             error_str = str(e)
             print(f"Upload failed (Attempt {attempt+1}/{max_retries}): {error_str}")
             if attempt < max_retries - 1:
-                sleep_time = 60 # Default for 500s or network drops
+                # EXPONENTIAL BACKOFF
+                base_sleep = 60
                 
                 if "429" in error_str or "Retry after" in error_str:
-                    sleep_time = 300 # Default rate limit sleep
+                    base_sleep = 300
                     import re
                     match = re.search(r"Retry after (\d+) seconds", error_str)
                     if match:
-                        sleep_time = int(match.group(1)) + 15 # Wait exactly what they ask + 15s buffer
-                    print(f"Rate limited by HuggingFace! Sleeping for {sleep_time} seconds...")
+                        base_sleep = int(match.group(1)) + 15 
+                    
+                    # Apply exponential multiplier based on attempt number (e.g. 300s -> 600s -> 1200s)
+                    sleep_time = base_sleep * (2 ** attempt)
+                    print(f"Rate limited by HuggingFace! Exponential backoff sleeping for {sleep_time} seconds...")
                 else:
-                    print(f"Network error! Sleeping for {sleep_time} seconds before retrying...")
+                    sleep_time = base_sleep * (2 ** attempt)
+                    print(f"Network error! Exponential backoff sleeping for {sleep_time} seconds before retrying...")
                     
                 time.sleep(sleep_time)
             else:
