@@ -11,6 +11,7 @@ from huggingface_hub import HfApi, CommitOperationAdd
 # Maximum runtime before voluntarily shutting down (5.5 hours)
 MAX_RUNTIME_SECONDS = 5.5 * 3600 
 BATCH_SIZE = 15 # Upload 15 files at a time to slash total HF API requests
+CRAWL_INDEX_LIMIT = 1
 
 def get_all_crawls(years_to_keep=3):
     current_year = datetime.datetime.now().year
@@ -171,7 +172,7 @@ def main():
         master_file_path = f"{crawl_id}/master_{crawl_id}.txt.gz"
         if master_file_path not in hf_files:
             active_crawls.append(crawl_id)
-            if len(active_crawls) >= 3: # Limit to 3 active crawls per swarm run to not spread too thin
+            if len(active_crawls) >= CRAWL_INDEX_LIMIT: # Limit to 3 active crawls per swarm run to not spread too thin
                 break
                 
     print(f"Targeting {len(active_crawls)} active crawls: {active_crawls}")
