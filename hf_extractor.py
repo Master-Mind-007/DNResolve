@@ -11,7 +11,7 @@ from huggingface_hub import HfApi, CommitOperationAdd
 # Maximum runtime before voluntarily shutting down (5.5 hours)
 MAX_RUNTIME_SECONDS = 5.5 * 3600 
 BATCH_SIZE = 15 # Upload 15 files at a time to slash total HF API requests
-CRAWL_INDEX_LIMIT = 1
+CRAWL_INDEX_LIMIT = 2
 
 def get_all_crawls(years_to_keep=3):
     current_year = datetime.datetime.now().year
